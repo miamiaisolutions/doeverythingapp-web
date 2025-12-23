@@ -1,0 +1,281 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ========================================
+    // Helper Functions
+    // ========================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isUser(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function getMember(workspaceId, userId) {
+      return get(/databases/$(database)/documents/workspace_members/$(workspaceId + '_' + userId));
+    }
+    
+    function memberExists(workspaceId, userId) {
+      return exists(/databases/$(database)/documents/workspace_members/$(workspaceId + '_' + userId));
+    }
+    
+    function getUserRole(workspaceId, userId) {
+      return memberExists(workspaceId, userId) ? 
+        getMember(workspaceId, userId).data.role : null;
+    }
+    
+    function isActiveMember(workspaceId, userId) {
+      return memberExists(workspaceId, userId) && 
+        getMember(workspaceId, userId).data.status == 'active';
+    }
+    
+    function isOwner(workspaceId, userId) {
+      return isActiveMember(workspaceId, userId) && 
+        getUserRole(workspaceId, userId) == 'owner';
+    }
+    
+    function isAdmin(workspaceId, userId) {
+      return isActiveMember(workspaceId, userId) && 
+        getUserRole(workspaceId, userId) == 'admin';
+    }
+    
+    function isOwnerOrAdmin(workspaceId, userId) {
+      let role = getUserRole(workspaceId, userId);
+      return isActiveMember(workspaceId, userId) && 
+        (role == 'owner' || role == 'admin');
+    }
+    
+    // ========================================
+    // User Rules
+    // ========================================
+    
+    match /users/{userId} {
+      allow read: if isUser(userId);
+      allow write: if isUser(userId);
+    }
+    
+    // ========================================
+    // Workspace Rules
+    // ========================================
+    
+    match /workspaces/{workspaceId} {
+      // Anyone can create a workspace
+      allow create: if isAuthenticated() && 
+        request.resource.data.ownerId == request.auth.uid;
+      
+      // Members can read their workspace
+      allow read: if isAuthenticated() && 
+        isActiveMember(workspaceId, request.auth.uid);
+      
+      // Owner or Admin can update workspace
+      allow update: if isAuthenticated() && 
+        isOwnerOrAdmin(workspaceId, request.auth.uid) &&
+        // Prevent changing owner
+        request.resource.data.ownerId == resource.data.ownerId;
+      
+      // Only owner can delete workspace
+      allow delete: if isAuthenticated() && 
+        isOwner(workspaceId, request.auth.uid);
+    }
+    
+    // ========================================
+    // Workspace Member Rules
+    // ========================================
+    
+    match /workspace_members/{memberId} {
+      // Members can read other members in their workspace
+      allow read: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid);
+      
+      // Anyone can create (initial owner membership)
+      // Or owner/admin can add members
+      allow create: if isAuthenticated() && (
+        // Self-registration as owner when creating workspace
+        (request.resource.data.userId == request.auth.uid && 
+         request.resource.data.role == 'owner') ||
+        // Owner/Admin inviting members
+        isOwnerOrAdmin(request.resource.data.workspaceId, request.auth.uid)
+      );
+      
+      // Owner/Admin can update member status and roles
+      allow update: if isAuthenticated() && 
+        isOwnerOrAdmin(resource.data.workspaceId, request.auth.uid) &&
+        // Cannot change owner role
+        (resource.data.role != 'owner') &&
+        (request.resource.data.role != 'owner');
+      
+      // Owner/Admin can remove members (status = removed)
+      // Cannot remove owner
+      allow delete: if isAuthenticated() && 
+        isOwnerOrAdmin(resource.data.workspaceId, request.auth.uid) &&
+        resource.data.role != 'owner';
+    }
+    
+    // ========================================
+    // Workspace Invite Rules
+    // ========================================
+    
+    match /workspace_invites/{inviteId} {
+      // Members can read invites for their workspace
+      allow read: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid);
+      
+      // Owner/Admin can create invites
+      allow create: if isAuthenticated() && 
+        isOwnerOrAdmin(request.resource.data.workspaceId, request.auth.uid) &&
+        request.resource.data.invitedBy == request.auth.uid;
+      
+      // Owner/Admin can update invites (cancel, etc)
+      allow update: if isAuthenticated() && 
+        isOwnerOrAdmin(resource.data.workspaceId, request.auth.uid);
+      
+      // Owner/Admin can delete invites
+      allow delete: if isAuthenticated() && 
+        isOwnerOrAdmin(resource.data.workspaceId, request.auth.uid);
+    }
+    
+    // ========================================
+    // Webhook Rules
+    // ========================================
+    
+    match /webhooks/{webhookId} {
+      // Members can read webhooks in their workspace
+      allow read: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid);
+      
+      // Members can create webhooks in their workspace
+      allow create: if isAuthenticated() && 
+        isActiveMember(request.resource.data.workspaceId, request.auth.uid) &&
+        request.resource.data.createdBy == request.auth.uid;
+      
+      // Owner/Admin can edit any webhook
+      // Members can only edit their own webhooks
+      allow update: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid) && (
+          isOwnerOrAdmin(resource.data.workspaceId, request.auth.uid) ||
+          resource.data.createdBy == request.auth.uid
+        );
+      
+      // Owner/Admin can delete any webhook
+      // Members can only delete their own webhooks
+      allow delete: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid) && (
+          isOwnerOrAdmin(resource.data.workspaceId, request.auth.uid) ||
+          resource.data.createdBy == request.auth.uid
+        );
+    }
+    
+    // ========================================
+    // Webhook Version Rules
+    // ========================================
+    
+    match /webhook_versions/{versionId} {
+      // Same rules as webhooks
+      allow read: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid);
+      
+      allow create, update, delete: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid) && (
+          isOwnerOrAdmin(resource.data.workspaceId, request.auth.uid) ||
+          resource.data.createdBy == request.auth.uid
+        );
+    }
+    
+    // ========================================
+    // Conversation Rules
+    // ========================================
+    
+    match /conversations/{conversationId} {
+      // Owner/Admin can read all conversations
+      // Members can only read their own conversations
+      allow read: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid) && (
+          isOwnerOrAdmin(resource.data.workspaceId, request.auth.uid) ||
+          resource.data.userId == request.auth.uid
+        );
+      
+      // Members can create conversations in their workspace
+      allow create: if isAuthenticated() && 
+        isActiveMember(request.resource.data.workspaceId, request.auth.uid) &&
+        request.resource.data.userId == request.auth.uid;
+      
+      // Only conversation owner can update
+      allow update: if isAuthenticated() && 
+        resource.data.userId == request.auth.uid;
+      
+      // Only conversation owner can delete
+      allow delete: if isAuthenticated() && 
+        resource.data.userId == request.auth.uid;
+    }
+    
+    // ========================================
+    // Message Rules
+    // ========================================
+    
+    match /conversations/{conversationId}/messages/{messageId} {
+      // Same read permissions as conversation
+      allow read: if isAuthenticated() && 
+        exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+        isActiveMember(
+          get(/databases/$(database)/documents/conversations/$(conversationId)).data.workspaceId,
+          request.auth.uid
+        ) && (
+          isOwnerOrAdmin(
+            get(/databases/$(database)/documents/conversations/$(conversationId)).data.workspaceId,
+            request.auth.uid
+          ) ||
+          get(/databases/$(database)/documents/conversations/$(conversationId)).data.userId == request.auth.uid
+        );
+      
+      // Only conversation owner can create messages
+      allow create: if isAuthenticated() && 
+        exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+        get(/databases/$(database)/documents/conversations/$(conversationId)).data.userId == request.auth.uid;
+      
+      // No updates or deletes on messages
+      allow update, delete: if false;
+    }
+    
+    // ========================================
+    // Webhook Execution Rules
+    // ========================================
+    
+    match /webhook_executions/{executionId} {
+      // Members can read executions in their workspace
+      allow read: if isAuthenticated() && 
+        isActiveMember(resource.data.workspaceId, request.auth.uid);
+      
+      // Only server can create executions (via Admin SDK)
+      allow create: if false;
+      
+      // No updates or deletes
+      allow update, delete: if false;
+    }
+    
+    // ========================================
+    // Developer Access Rules (v2 feature)
+    // ========================================
+    
+    match /developer_access/{accessId} {
+      // Developer can read their own access grants
+      allow read: if isAuthenticated() && 
+        resource.data.developerId == request.auth.uid;
+      
+      // Workspace owner can grant developer access
+      allow create: if isAuthenticated() && 
+        isOwner(request.resource.data.workspaceId, request.auth.uid);
+      
+      // Workspace owner can revoke access
+      allow delete: if isAuthenticated() && 
+        isOwner(resource.data.workspaceId, request.auth.uid);
+      
+      // Workspace owner can update access level
+      allow update: if isAuthenticated() && 
+        isOwner(resource.data.workspaceId, request.auth.uid);
+    }
+  }
+}
