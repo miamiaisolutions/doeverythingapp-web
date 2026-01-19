@@ -56,6 +56,13 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isUser(userId);
       allow write: if isUser(userId);
+      
+      // Subscription Data (managed by server)
+      // Only user can read, no one can write (except Admin SDK)
+      match /subscriptions/{subscriptionId} {
+        allow read: if isUser(userId);
+        allow write: if false; 
+      }
     }
     
     // ========================================

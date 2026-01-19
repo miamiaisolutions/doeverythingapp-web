@@ -70,15 +70,23 @@ export const executeWebhook = onCall(
                 throw new HttpsError("failed-precondition", "Webhook is disabled");
             }
 
-            // 2. Get user's subscription tier
-            // TODO: In the future, this should be the WORKSPACE'S subscription tier
-            // For now, we still pull from the user (likely the owner) or the executing user?
-            // Let's keep it as executing user for now to minimize breakage, OR switch to workspace owner.
-            // Given the task is just fixing the architecture, let's stick to the executing user's tier
-            // but ideally we should fetch the workspace owner's tier.
-            const userDoc = await admin.firestore().collection("users").doc(userId).get();
-            const userData = userDoc.data();
-            const tier: SubscriptionTier = userData?.subscriptionTier || "free";
+            // 2. Get workspace owner's subscription tier
+            const workspaceDocRef = await admin.firestore().collection("workspaces").doc(workspaceId).get();
+            if (!workspaceDocRef.exists) {
+                throw new HttpsError("not-found", "Workspace not found");
+            }
+            const workspaceData = workspaceDocRef.data();
+            const ownerId = workspaceData?.ownerId;
+
+            let tier: SubscriptionTier = "free";
+
+            if (ownerId) {
+                const ownerDoc = await admin.firestore().collection("users").doc(ownerId).get();
+                const ownerData = ownerDoc.data();
+                // Check new subscription structure first, falling back to old or default
+                const planId = ownerData?.subscription?.planId || "free";
+                tier = planId as SubscriptionTier;
+            }
 
             // 3. Validate and get timeout
             const timeoutSeconds = validateTimeout(tier, webhookConfig.timeoutSeconds);

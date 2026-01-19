@@ -12,6 +12,14 @@ export interface User {
     developerSubscriptionStatus?: string;
     stripeCustomerId?: string; // User-level Stripe customer for developer add-on
     openaiApiKey?: string; // Encrypted
+    subscription?: {
+        planId: SubscriptionTier;
+        status: "active" | "canceled" | "past_due" | "incomplete";
+        currentPeriodEnd: Timestamp;
+        stripeSubscriptionId?: string;
+        stripePriceId?: string;
+        cancelAtPeriodEnd?: boolean;
+    };
     createdAt: Timestamp;
 }
 

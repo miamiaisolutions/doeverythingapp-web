@@ -42,7 +42,15 @@ export async function createWebhook(
         throw new Error("Workspace not found");
     }
     const workspace = workspaceDoc.data() as Workspace;
-    const limits = TIER_LIMITS[workspace.subscriptionTier || 'free'];
+
+    // Fetch owner to get subscription tier
+    const ownerRef = doc(db, "users", workspace.ownerId);
+    const ownerDoc = await getDoc(ownerRef);
+    const ownerData = ownerDoc.data() as any; // Cast to access new subscription field
+
+    // Default to free if no sub
+    const planId = ownerData?.subscription?.planId || 'free';
+    const limits = TIER_LIMITS[planId as keyof typeof TIER_LIMITS] || TIER_LIMITS['free'];
 
     // 2. Count existing webhooks
     const q = query(
@@ -53,7 +61,7 @@ export async function createWebhook(
     const currentCount = snapshot.size;
 
     if (currentCount >= limits.maxWebhooks) {
-        throw new Error(`Upgrade your plan to add more webhooks. Limit for ${workspace.subscriptionTier} is ${limits.maxWebhooks}.`);
+        throw new Error(`Upgrade your plan to add more webhooks. Limit for ${planId} plan is ${limits.maxWebhooks}.`);
     }
 
     const docRef = await addDoc(collection(db, "webhooks"), {
